@@ -89,55 +89,72 @@ This section shows the sequence diagrams for EdgeX Foundry Logging Service.
 Configuration Properties
 ========================
 
-The default configuration file is in the /src/main/resources folder of source code.  When interacting with the Configuration Management microservice, the configuration is in the /config/support-logging name space in Consul Key/Value Store.
-
-
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
 |   **Configuration**                                     |   **Default Value**                 |  **Dependencies**                                                         |
 +=========================================================+=====================================+===========================================================================+
-| read.max.limit                                          | 100                             \*  | Read data limit per invocation                                            |
+| Writable Persistence                                    | database                        \*  | "file" to save logging in file;                                           |
+|                                                         |                                     | "database" to save logging in MongoDB                                     |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| heart.beat.time                                         | 300000                          \*  | Heart beat time in milliseconds                                           |
+| Writable LogLevel                                       | INFO                            \*  | Logs messages set to a level of "INFO" or higher                          |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| heart.beat.msg                                          | Logging Service heart beat      \*  | Heart beat message                                                        |
+| Service ReadMaxLimit                                    | 100                            \**  | Read data limit per invocation                                            |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| server.port                                             | 48061                          \**  | Micro service port number                                                 |  
+| Service BootTimeout                                     | 300000                         \**  | Heart beat time in milliseconds                                           |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.cloud.consul.discovery.healthCheckPath           | /api/v1/ping                   \**  | Health checking path for Service Registry                                 | 
+| Service StartupMsg                                      | Logging Service heart beat     \**  | Heart beat message                                                        |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| logging.persistence                                     | file                            \*  | "file" to save logging in file;                                           |
-|                                                         |                                     | "mongodb" to save logging in MongoDB                                      |  
+| Service Port                                            | 48061                          \**  | Micro service port number                                                 |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| Following config only take effect when logging.persistence=file                                                                                                           | 
+| Service Host                                            | localhost                      \**  | Micro service host name                                                   |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| logging.persistence.file                                |                                     | File path to save logging entries                                         |
+| Service Protocol                                        | http                           \**  | Micro service host protocol                                               |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| logging.persistence.file.maxsize                        | 10MB                            \*  | Threshold to roll and archive the logging file. It can be specified in    |
-|                                                         |                                     | bytes, kilobytes, megabytes or gigabytes by suffixing a numeric value     |
-|                                                         |                                     | with KB, MB and respectively GB. For example, 5000000, 5000KB, 5MB and    |
-|                                                         |                                     | 2GB are all valid values, with the first three being equivalent.          |                               
+| Service ClientMonitor                                   | 15000                          \**  | The interval in milliseconds at which any service clients will            |
+|                                                         |                                     | refresh their endpoint information from the service registry (Consul)                                                                          |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| Following config only take effect when logging.persistence=mongodb                                                                                                        |
+| Service CheckInterval                                   | 10s                            \**  | The interval in seconds at which the service registry (Consul) will       |
+|                                                         |                                     | conduct a health check of this service.                                   |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.data.mongodb.username                            | logging                        \**  | MongoDB user name                                                         |
+| Service Timeout                                         | 5000                           \**  | Specifies a timeout (in milliseconds) for handling requests               |                                                                       |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.data.mongodb.password                            | password                        \*  | MongoDB password                                                          |
+| Following config only take effect when Writable.Persistence=file                                                                                                           | 
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.data.mongodb.host                                | localhost                      \**  | MongoDB host name                                                         |
+| Logging File                                            | ./logs/edgex-support-logging.log    | File path to save logging entries                                         |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.data.mongodb.port                                | 27017                          \**  | MongoDB port number                                                       |
+| Following config only take effect when logging.persistence=database                                                                                                       |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
-| spring.data.mongodb.database                            | logging                         \*  | MongoDB database name                                                     | 
+| Databases Database Primary Username                     | [empty string]                 \**  | DB user name                                                              |
 +---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Password                             | [empty string]                 \**  | DB password                                                               |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Host                                 | localhost                      \**  | DB host name                                                              |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Port                                 | 27017                          \**  | DB port number                                                            |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Database                             | logging                        \**  | database or document store name                                           |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Timeout                              | 5000                           \**  | DB connection timeout                                                     |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Databases Database Type                                 | mongodb                        \**  | DB type                                                                   |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Following config only take effect when connecting to the registry for configuraiton info                                                                                  |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Registry Host                                           | localhost                      \**  | Registry host name                                                        |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Registry Port                                           | 8500                           \**  | Registry port number                                                      |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+| Registry Type                                           | consul                         \**  | Registry implementation type                                              |
++---------------------------------------------------------+-------------------------------------+---------------------------------------------------------------------------+
+
 
 | \*means the configuration value can be changed if necessary.
 | \**means the configuration value has to be replaced.
 | \***means the configuration value should NOT be changed.
 
 
-=======================================
-Logging Service Client Library for Java
-=======================================
+====================================================
+Logging Service Client Library for Java (Deprecated)
+====================================================
 
 As most of EdgeX Foundry microservices are implemented in Java, we provide a Client Library for Java, so that Java-based microservices could directly switch their Loggers to use EdgeX Foundry Logging Service.  The next graphic shows the high-level design architecture for the Java Client Library.
 
@@ -187,8 +204,39 @@ Without the SLF4J implementation (in this case slf4j-simple), you will see error
   SLF4J: Defaulting to no-operation (NOP) logger implementation
   SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
 
+==================
+EdgeX Logging Keys
+==================
+Within the Edgex Go reference implementation, log entries are currently written as a set of key/value pairs. We may change this later to be more of a struct type than can be formatted according to the user’s requirements (JSON, XML, system, etc). In that case, the targeted struct should contain properties that support the keys utilized by the system and described below.
 
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+|   **Key**                                     |   **Intent*                                                                           |
++===============================================+=======================================================================================+
+| level                                         | Indicates the log level of the individual log entry (INFO, DEBUG, ERROR, etc)         |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| ts                                            | The timestamp of the log entry, recorded in UTC                                       |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| app                                           | This should contain the service key of the service writing the log entry              |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| source                                        | The file and line number where the log entry was written                              |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| msg                                           | A field for custom information accompanying the log entry. You do not need to         |
+|                                               | specify this explicitly as it is the first parameter when calling one of the          |
+|                                               | LoggingClient’s functions.                                                            |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| correlation-id                                | Records the correlation-id header value that is scoped to a given request.            |
+|                                               | It has two sub-ordinate, associated fields (see below).                               |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| correlation-id path                           | This field records the API route being requested and is utilized when the             |
+|                                               | service begins handling a request.                                                    |
+|                                               | \* Example: path=/api/v1/event                                                        |
+|                                               | When beginning the request handling, by convention set “msg” to “Begin request”.      |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
+| correlation-id duration                       | This field records the amount of time taken to handle a given request.                |
+|                                               | When completing the request handling, by convention set “msg” to “Response complete”. |
++-----------------------------------------------+---------------------------------------------------------------------------------------+
 
+Additional keys can be added as need warrants. This document should be kept updated to reflect their inclusion and purpose.
 
 
 

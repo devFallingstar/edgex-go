@@ -11,25 +11,25 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/edgexfoundry/edgex-go"
-	"github.com/edgexfoundry/edgex-go/export/client"
-	"github.com/edgexfoundry/edgex-go/pkg/config"
-	"github.com/edgexfoundry/edgex-go/pkg/usage"
-	"go.uber.org/zap"
+	"github.com/edgexfoundry/edgex-go/pkg/clients/logging"
+
+	"github.com/edgexfoundry/edgex-go/internal"
+	"github.com/edgexfoundry/edgex-go/internal/export/client"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/correlation"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/startup"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/usage"
 )
 
-var logger *zap.Logger
-
 func main() {
-	logger, _ = zap.NewProduction()
-	defer logger.Sync()
-
-	logger.Info(fmt.Sprintf("Starting %s %s", client.ExportClient, edgex.Version))
-
+	start := time.Now()
 	var (
 		useConsul  bool
 		useProfile string
@@ -42,43 +42,45 @@ func main() {
 	flag.Usage = usage.HelpCallback
 	flag.Parse()
 
-	configuration := &client.ConfigurationStruct{}
-	err := config.LoadFromFile(useProfile, configuration)
-	if err != nil {
-		logger.Error(err.Error(), zap.String("version", edgex.Version))
-		return
+	params := startup.BootParams{UseConsul: useConsul, UseProfile: useProfile, BootTimeout: internal.BootTimeoutDefault}
+	startup.Bootstrap(params, client.Retry, logBeforeInit)
+
+	ok := client.Init(useConsul)
+	if !ok {
+		logBeforeInit(fmt.Errorf("%s: Service bootstrap failed", internal.ExportClientServiceKey))
+		os.Exit(1)
 	}
 
-	//Determine if configuration should be overridden from Consul
-	var consulMsg string
-	if useConsul {
-		consulMsg = "Loading configuration from Consul..."
-		err := client.ConnectToConsul(*configuration)
-		if err != nil {
-			logger.Error(err.Error(), zap.String("version", edgex.Version))
-			return //end program since user explicitly told us to use Consul.
-		}
-	} else {
-		consulMsg = "Bypassing Consul configuration..."
-	}
+	client.LoggingClient.Info("Service dependencies resolved...")
+	client.LoggingClient.Info(fmt.Sprintf("Starting %s %s ", internal.ExportClientServiceKey, edgex.Version))
 
-	logger.Info(consulMsg, zap.String("version", edgex.Version))
-
-	err = client.Init(*configuration, logger)
+	http.TimeoutHandler(nil, time.Millisecond*time.Duration(client.Configuration.Service.Timeout), "Request timed out")
+	client.LoggingClient.Info(client.Configuration.Service.StartupMsg)
 
 	errs := make(chan error, 2)
+	listenForInterrupt(errs)
+	client.StartHTTPServer(errs)
 
-	client.StartHTTPServer(*configuration, errs)
+	// Time it took to start service
+	client.LoggingClient.Info("Service started in: " + time.Since(start).String())
+	client.LoggingClient.Info("Listening on port: " + strconv.Itoa(client.Configuration.Service.Port))
+	c := <-errs
+	client.Destruct()
+	client.LoggingClient.Warn(fmt.Sprintf("terminating: %v", c))
 
+	os.Exit(0)
+}
+
+func logBeforeInit(err error) {
+	l := logger.NewClient(internal.ExportClientServiceKey, false, "", logger.InfoLog)
+	l.Error(err.Error())
+}
+
+func listenForInterrupt(errChan chan error) {
 	go func() {
+		correlation.LoggingClient = client.LoggingClient
 		c := make(chan os.Signal)
 		signal.Notify(c, syscall.SIGINT)
-		errs <- fmt.Errorf("%s", <-c)
+		errChan <- fmt.Errorf("%s", <-c)
 	}()
-
-	c := <-errs
-
-	client.Destroy()
-
-	logger.Info("terminated", zap.String("error", c.Error()))
 }

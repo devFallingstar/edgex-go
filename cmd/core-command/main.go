@@ -10,10 +10,6 @@
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
- *
- * @microservice: core-command-go service
- * @author: Spencer Bull, Dell
- * @version: 0.5.0
  *******************************************************************************/
 package main
 
@@ -28,14 +24,15 @@ import (
 	"time"
 
 	"github.com/edgexfoundry/edgex-go"
-	"github.com/edgexfoundry/edgex-go/core/command"
-	"github.com/edgexfoundry/edgex-go/pkg/config"
-	"github.com/edgexfoundry/edgex-go/pkg/heartbeat"
-	"github.com/edgexfoundry/edgex-go/pkg/usage"
-	"github.com/edgexfoundry/edgex-go/support/logging-client"
-)
+	"github.com/edgexfoundry/edgex-go/pkg/clients/logging"
+	"github.com/gorilla/context"
 
-var loggingClient logger.LoggingClient
+	"github.com/edgexfoundry/edgex-go/internal"
+	"github.com/edgexfoundry/edgex-go/internal/core/command"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/correlation"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/startup"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/usage"
+)
 
 func main() {
 	start := time.Now()
@@ -49,62 +46,38 @@ func main() {
 	flag.Usage = usage.HelpCallback
 	flag.Parse()
 
-	//Read Configuration
-	configuration := &command.ConfigurationStruct{}
-	err := config.LoadFromFile(useProfile, configuration)
-	if err != nil {
-		logBeforeTermination(err)
-		return
+	params := startup.BootParams{UseConsul: useConsul, UseProfile: useProfile, BootTimeout: internal.BootTimeoutDefault}
+	startup.Bootstrap(params, command.Retry, logBeforeInit)
+
+	ok := command.Init(useConsul)
+	if !ok {
+		logBeforeInit(fmt.Errorf("%s: Service bootstrap failed!", internal.CoreCommandServiceKey))
+		os.Exit(1)
 	}
 
-	//Determine if configuration should be overridden from Consul
-	var consulMsg string
-	if useConsul {
-		consulMsg = "Loading configuration from Consul..."
-		err := command.ConnectToConsul(*configuration)
-		if err != nil {
-			logBeforeTermination(err)
-			return //end program since user explicitly told us to use Consul.
-		}
-	} else {
-		consulMsg = "Bypassing Consul configuration..."
-	}
+	command.LoggingClient.Info("Service dependencies resolved...")
+	command.LoggingClient.Info(fmt.Sprintf("Starting %s %s ", internal.CoreCommandServiceKey, edgex.Version))
 
-	// Setup Logging
-	logTarget := setLoggingTarget(*configuration)
-	var loggingClient= logger.NewClient(configuration.ApplicationName, configuration.EnableRemoteLogging, logTarget)
-
-	loggingClient.Info(consulMsg)
-	loggingClient.Info(fmt.Sprintf("Starting %s %s ", command.COMMANDSERVICENAME, edgex.Version))
-
-	command.Init(*configuration, loggingClient)
-
-	http.TimeoutHandler(nil, time.Millisecond*time.Duration(configuration.ServiceTimeout), "Request timed out")
-	loggingClient.Info(configuration.AppOpenMsg, "")
-
-	heartbeat.Start(configuration.HeartBeatMsg, configuration.HeartBeatTime, loggingClient)
+	http.TimeoutHandler(nil, time.Millisecond*time.Duration(command.Configuration.Service.Timeout), "Request timed out")
+	command.LoggingClient.Info(command.Configuration.Service.StartupMsg)
 
 	errs := make(chan error, 2)
 	listenForInterrupt(errs)
-	startHttpServer(errs, configuration.ServicePort)
+	startHttpServer(errs, command.Configuration.Service.Port)
+
 	// Time it took to start service
-	loggingClient.Info("Service started in: "+time.Since(start).String(), "")
-	loggingClient.Info("Listening on port: "+strconv.Itoa(configuration.ServicePort), "")
+	command.LoggingClient.Info("Service started in: " + time.Since(start).String())
+	command.LoggingClient.Info("Listening on port: " + strconv.Itoa(command.Configuration.Service.Port))
 	c := <-errs
-	loggingClient.Warn(fmt.Sprintf("terminating: %v", c))
+	command.Destruct()
+	command.LoggingClient.Warn(fmt.Sprintf("terminating: %v", c))
+
+	os.Exit(0)
 }
 
-func logBeforeTermination(err error) {
-	loggingClient = logger.NewClient(command.COMMANDSERVICENAME, false, "")
-	loggingClient.Error(err.Error())
-}
-
-func setLoggingTarget(conf command.ConfigurationStruct) string {
-	logTarget := conf.LoggingRemoteURL
-	if !conf.EnableRemoteLogging {
-		return conf.LogFile
-	}
-	return logTarget
+func logBeforeInit(err error) {
+	command.LoggingClient = logger.NewClient(internal.CoreCommandServiceKey, false, "", logger.InfoLog)
+	command.LoggingClient.Error(err.Error())
 }
 
 func listenForInterrupt(errChan chan error) {
@@ -117,7 +90,8 @@ func listenForInterrupt(errChan chan error) {
 
 func startHttpServer(errChan chan error, port int) {
 	go func() {
+		correlation.LoggingClient = command.LoggingClient
 		r := command.LoadRestRoutes()
-		errChan <- http.ListenAndServe(":"+strconv.Itoa(port), r)
+		errChan <- http.ListenAndServe(":"+strconv.Itoa(port), context.ClearHandler(r))
 	}()
 }

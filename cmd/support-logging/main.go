@@ -11,20 +11,22 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/edgexfoundry/edgex-go"
-	"github.com/edgexfoundry/edgex-go/pkg/config"
-	"github.com/edgexfoundry/edgex-go/pkg/heartbeat"
-	"github.com/edgexfoundry/edgex-go/pkg/usage"
-	"github.com/edgexfoundry/edgex-go/support/logging"
-	"github.com/edgexfoundry/edgex-go/support/logging-client"
-)
+	"github.com/edgexfoundry/edgex-go/pkg/clients/logging"
 
-var loggingClient logger.LoggingClient
+	"github.com/edgexfoundry/edgex-go/internal"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/correlation"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/startup"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/usage"
+	"github.com/edgexfoundry/edgex-go/internal/support/logging"
+)
 
 func main() {
 	start := time.Now()
@@ -38,50 +40,50 @@ func main() {
 	flag.Usage = usage.HelpCallback
 	flag.Parse()
 
-	configuration := &logging.ConfigurationStruct{}
-	err := config.LoadFromFile(useProfile, configuration)
-	if err != nil {
-		logBeforeTermination(err)
-		return
+	params := startup.BootParams{UseConsul: useConsul, UseProfile: useProfile, BootTimeout: internal.BootTimeoutDefault}
+	startup.Bootstrap(params, logging.Retry, logBeforeInit)
+
+	ok := logging.Init(useConsul)
+	if !ok {
+		time.Sleep(time.Millisecond * time.Duration(15))
+		logBeforeInit(fmt.Errorf("%s: Service bootstrap failed!", internal.SupportLoggingServiceKey))
+		os.Exit(1)
 	}
-
-	//Determine if configuration should be overridden from Consul
-	var consulMsg string
-	if useConsul {
-		consulMsg = "Loading configuration from Consul..."
-		err := logging.ConnectToConsul(*configuration)
-		if err != nil {
-			logBeforeTermination(err)
-			return //end program since user explicitly told us to use Consul.
-		}
-	} else {
-		consulMsg = "Bypassing Consul configuration..."
-	}
-
-	loggingClient = logger.NewClient(configuration.ApplicationName, false, configuration.LoggingFile)
-	loggingClient.Info(consulMsg)
-	loggingClient.Info(fmt.Sprintf("Starting %s %s", logging.SUPPORTLOGGINGSERVICENAME, edgex.Version))
-
-	logging.Init(*configuration)
-	heartbeat.Start(configuration.HeartBeatMsg, configuration.HeartBeatTime, loggingClient)
+	logging.LoggingClient.Info("Service dependencies resolved...")
+	logging.LoggingClient.Info(fmt.Sprintf("Starting %s %s", internal.SupportLoggingServiceKey, edgex.Version))
 
 	errs := make(chan error, 2)
+	listenForInterrupt(errs)
 
+	// Time it took to start service
+	logging.LoggingClient.Info("Service started in: " + time.Since(start).String())
+	logging.LoggingClient.Info("Listening on port: " + strconv.Itoa(logging.Configuration.Service.Port))
+	startHTTPServer(errs)
+
+	c := <-errs
+	logging.Destruct()
+	logging.LoggingClient.Warn(fmt.Sprintf("terminated %v", c))
+
+	os.Exit(0)
+}
+
+func logBeforeInit(err error) {
+	l := logger.NewClient(internal.SupportLoggingServiceKey, false, "", logger.InfoLog)
+	l.Error(err.Error())
+}
+
+func listenForInterrupt(errChan chan error) {
 	go func() {
 		c := make(chan os.Signal)
 		signal.Notify(c, syscall.SIGINT)
-		errs <- fmt.Errorf("%s", <-c)
+		errChan <- fmt.Errorf("%s", <-c)
 	}()
-
-	// Time it took to start service
-	loggingClient.Info("Service started in: "+time.Since(start).String(), "")
-	logging.StartHTTPServer(errs)
-
-	c := <-errs
-	loggingClient.Warn(fmt.Sprintf("terminated %v", c))
 }
 
-func logBeforeTermination(err error) {
-	loggingClient = logger.NewClient(logging.SUPPORTLOGGINGSERVICENAME, false, "")
-	loggingClient.Error(err.Error())
+func startHTTPServer(errChan chan error) {
+	go func() {
+		correlation.LoggingClient = logging.LoggingClient
+		p := fmt.Sprintf(":%d", logging.Configuration.Service.Port)
+		errChan <- http.ListenAndServe(p, logging.HttpServer())
+	}()
 }

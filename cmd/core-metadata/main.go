@@ -10,16 +10,13 @@
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
- *
- * @microservice: core-metadata-go service
- * @author: Spencer Bull & Ryan Comer, Dell
- * @version: 0.5.0
  *******************************************************************************/
 package main
 
 import (
 	"flag"
 	"fmt"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/correlation"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,14 +25,13 @@ import (
 	"time"
 
 	"github.com/edgexfoundry/edgex-go"
-	"github.com/edgexfoundry/edgex-go/core/metadata"
-	"github.com/edgexfoundry/edgex-go/pkg/config"
-	"github.com/edgexfoundry/edgex-go/pkg/heartbeat"
-	"github.com/edgexfoundry/edgex-go/pkg/usage"
-	"github.com/edgexfoundry/edgex-go/support/logging-client"
+	"github.com/edgexfoundry/edgex-go/internal"
+	"github.com/edgexfoundry/edgex-go/internal/core/metadata"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/startup"
+	"github.com/edgexfoundry/edgex-go/internal/pkg/usage"
+	"github.com/edgexfoundry/edgex-go/pkg/clients/logging"
+	"github.com/gorilla/context"
 )
-
-var loggingClient logger.LoggingClient
 
 func main() {
 	start := time.Now()
@@ -49,68 +45,38 @@ func main() {
 	flag.Usage = usage.HelpCallback
 	flag.Parse()
 
-	//Read Configuration
-	configuration := &metadata.ConfigurationStruct{}
-	err := config.LoadFromFile(useProfile, configuration)
-	if err != nil {
-		logBeforeTermination(err)
-		return
+	params := startup.BootParams{UseConsul: useConsul, UseProfile: useProfile, BootTimeout: internal.BootTimeoutDefault}
+	startup.Bootstrap(params, metadata.Retry, logBeforeInit)
+
+	ok := metadata.Init(useConsul)
+	if !ok {
+		logBeforeInit(fmt.Errorf("%s: Service bootstrap failed!", internal.CoreMetaDataServiceKey))
+		os.Exit(1)
 	}
 
-	//Determine if configuration should be overridden from Consul
-	var consulMsg string
-	if useConsul {
-		consulMsg = "Loading configuration from Consul..."
-		err := metadata.ConnectToConsul(*configuration)
-		if err != nil {
-			logBeforeTermination(err)
-			return //end program since user explicitly told us to use Consul.
-		}
-	} else {
-		consulMsg = "Bypassing Consul configuration..."
-	}
+	metadata.LoggingClient.Info("Service dependencies resolved...")
+	metadata.LoggingClient.Info(fmt.Sprintf("Starting %s %s ", internal.CoreMetaDataServiceKey, edgex.Version))
 
-	// Setup Logging
-	logTarget := setLoggingTarget(*configuration)
-	loggingClient = logger.NewClient(configuration.ApplicationName, configuration.EnableRemoteLogging, logTarget)
-
-	loggingClient.Info(consulMsg)
-	loggingClient.Info(fmt.Sprintf("Starting %s %s ", metadata.METADATASERVICENAME, edgex.Version))
-
-	err = metadata.Init(*configuration, loggingClient)
-	if err != nil {
-		loggingClient.Error(fmt.Sprintf("call to init() failed: %v", err.Error()))
-		return
-	}
-
-	http.TimeoutHandler(nil, time.Millisecond*time.Duration(configuration.ServiceTimeout), "Request timed out")
-	loggingClient.Info(configuration.AppOpenMsg, "")
-
-	heartbeat.Start(configuration.HeartBeatMsg, configuration.HeartBeatTime, loggingClient)
+	http.TimeoutHandler(nil, time.Millisecond*time.Duration(metadata.Configuration.Service.Timeout), "Request timed out")
+	metadata.LoggingClient.Info(metadata.Configuration.Service.StartupMsg)
 
 	errs := make(chan error, 2)
 	listenForInterrupt(errs)
-	startHttpServer(errs, configuration.ServicePort)
+	startHttpServer(errs, metadata.Configuration.Service.Port)
 
 	// Time it took to start service
-	loggingClient.Info("Service started in: "+time.Since(start).String(), "")
-	fmt.Println("Listening on port: " + strconv.Itoa(configuration.ServicePort))
+	metadata.LoggingClient.Info("Service started in: " + time.Since(start).String())
+	metadata.LoggingClient.Info("Listening on port: " + strconv.Itoa(metadata.Configuration.Service.Port))
 	c := <-errs
 	metadata.Destruct()
-	loggingClient.Warn(fmt.Sprintf("terminating: %v", c))
+	metadata.LoggingClient.Warn(fmt.Sprintf("terminating: %v", c))
+
+	os.Exit(0)
 }
 
-func logBeforeTermination(err error) {
-	loggingClient = logger.NewClient(metadata.METADATASERVICENAME, false, "")
-	loggingClient.Error(err.Error())
-}
-
-func setLoggingTarget(conf metadata.ConfigurationStruct) string {
-	logTarget := conf.LoggingRemoteURL
-	if !conf.EnableRemoteLogging {
-		return conf.LoggingFile
-	}
-	return logTarget
+func logBeforeInit(err error) {
+	l := logger.NewClient(internal.CoreMetaDataServiceKey, false, "", logger.InfoLog)
+	l.Error(err.Error())
 }
 
 func listenForInterrupt(errChan chan error) {
@@ -123,7 +89,8 @@ func listenForInterrupt(errChan chan error) {
 
 func startHttpServer(errChan chan error, port int) {
 	go func() {
+		correlation.LoggingClient = metadata.LoggingClient //Not thrilled about this, can't think of anything better ATM
 		r := metadata.LoadRestRoutes()
-		errChan <- http.ListenAndServe(":"+strconv.Itoa(port), r)
+		errChan <- http.ListenAndServe(":"+strconv.Itoa(port), context.ClearHandler(r))
 	}()
 }
